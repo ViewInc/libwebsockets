@@ -38,3 +38,5 @@ ar-lib
 libwebsockets.pc
 build/
 *.swp
+obj/
+.DS_Store
