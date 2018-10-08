@@ -229,7 +229,7 @@ lws_bind_protocol(struct lws *wsi, const struct lws_protocols *p)
 //		return 0;
 	const struct lws_protocols *vp = wsi->vhost->protocols, *vpo;
 
-	if (wsi->protocol)
+	if (wsi->protocol && wsi->user_space)
 		wsi->protocol->callback(wsi, LWS_CALLBACK_HTTP_DROP_PROTOCOL,
 					wsi->user_space, NULL, 0);
 	if (!wsi->user_space_externally_allocated)
@@ -321,7 +321,8 @@ lws_close_free_wsi(struct lws *wsi, enum lws_close_status reason)
 
 #if defined(LWS_WITH_HTTP2)
 
-	if (wsi->u.h2.parent_wsi) {
+	if ((wsi->upgraded_to_http2 || wsi->http2_substream) &&
+	    wsi->u.h2.parent_wsi) {
 		lwsl_info(" wsi: %p, his parent %p: siblings:\n", wsi, wsi->u.h2.parent_wsi);
 		lws_start_foreach_llp(struct lws **, w, wsi->u.h2.parent_wsi->u.h2.child_list) {
 			lwsl_info("   \\---- child %p\n", *w);
@@ -342,6 +343,7 @@ lws_close_free_wsi(struct lws *wsi, enum lws_close_status reason)
 				/* disconnect from siblings */
 				wsi2 = (*w)->u.h2.sibling_list;
 				(*w)->u.h2.sibling_list = NULL;
+				(*w)->u.h2.parent_wsi = NULL;
 				(*w)->socket_is_permanently_unusable = 1;
 				lws_close_free_wsi(*w, reason);
 				*w = wsi2;
@@ -445,6 +447,12 @@ lws_close_free_wsi(struct lws *wsi, enum lws_close_status reason)
 			LWS_CALLBACK_CLOSED_HTTP, wsi->user_space, NULL, 0);
 		wsi->told_user_closed = 1;
 	}
+
+	if (wsi->state == LWSS_DEAD_SOCKET) {
+		wsi->state_pre_close = wsi->state;
+		return;
+	}
+
 	if (wsi->socket_is_permanently_unusable ||
 	    reason == LWS_CLOSE_STATUS_NOSTATUS_CONTEXT_DESTROY ||
 	    wsi->state == LWSS_SHUTDOWN)
@@ -1482,7 +1490,7 @@ lws_set_proxy(struct lws_vhost *vhost, const char *proxy)
 	if (!strncmp(proxy, "http://", 7))
 		proxy += 7;
 
-	p = strchr(proxy, '@');
+	p = strrchr(proxy, '@');
 	if (p) { /* auth is around */
 
 		if ((unsigned int)(p - proxy) > sizeof(authstring) - 1)
@@ -1544,7 +1552,7 @@ lws_set_socks(struct lws_vhost *vhost, const char *socks)
 	vhost->socks_user[0] = '\0';
 	vhost->socks_password[0] = '\0';
 
-	p_at = strchr(socks, '@');
+	p_at = strrchr(socks, '@');
 	if (p_at) { /* auth is around */
 		if ((unsigned int)(p_at - socks) > (sizeof(user)
 			+ sizeof(password) - 2)) {
@@ -1847,7 +1855,9 @@ lwsl_hexdump_level(int hexdump_level, const void *vbuf, size_t len)
 LWS_VISIBLE void
 lwsl_hexdump(const void *vbuf, size_t len)
 {
+#if defined(_DEBUG)
 	lwsl_hexdump_level(LLL_DEBUG, vbuf, len);
+#endif
 }
 
 LWS_VISIBLE int
